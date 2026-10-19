@@ -103,7 +103,7 @@ curl http://127.0.0.1:9889/status
 
 **句式**（要模型，上限也最高）。规则不敢拆长定语，一拆就把意思改歪。开了 `rewrite: "ollama"` 后，合成前先让本地小模型把稿子改一遍：拆长句、换语序、去术语。失败就用原文，不耽误读。
 
-> 参考音频的脾气也会被模型照抄——播音腔的参考录出来就是播音腔。这条本机暂时没得选：达尼亚只有一条参考音频。
+> 参考音频的脾气也会被模型照抄——播音腔的参考录出来就是播音腔。本机当前中文还是单条参考（`gsvRefAudio`）；多情绪参考的素材已备好并验过两组，等新模型重测后再接进插件。
 
 ## 朗读稿净化（`polish`）
 
@@ -149,6 +149,33 @@ curl http://127.0.0.1:9889/status
 | 点击 | `fetch("http://127.0.0.1:9889/stop")`，host 侧回了 `access-control-allow-origin`，跨端口才通 |
 
 **已知脆点**：这套定位靠 DOM 结构，GUI 改版把 `[data-composer-seat]` 或左侧按钮组换掉就会失效；届时按钮消失，`stop.bat` 和发消息两个老入口仍然可用。
+
+### 中文模型重训（2026-10-20）
+
+| | 旧 | 新 |
+| --- | --- | --- |
+| GPT | `dania-e15.ckpt` | `dania2-e15.ckpt` |
+| SoVITS | `dania_e16_s2192.pth` | `dania2_e15_s285.pth` |
+| 训练数据 | 来路不明的长音频切片（切片目录已清空） | 游戏语音 50 条，约 7 分钟，48 kHz 原声降到 32k |
+| 轮数 | 15 / 16 | 15 / 15，batch 6 |
+
+**为什么换**：参考音频只负责音色，音域来自模型权重学到的韵律分布。旧模型念长段汇报会塌，新模型宽一些——同一句 11.9 s → 9.9 s，不再拖着走。
+
+**v2ProPlus 的四步预处理**：`1-get-text` → `2-get-hubert-wav32k` → `2-get-sv` → `3-get-semantic`。踩过的两个坑：
+
+- 漏跑 `2-get-sv`，`TextAudioSpeakerLoader` 会在 `assert os.path.exists(path7)` 处失败——v2ProPlus 多要一份 `7-sv_cn` 特征。
+- `logs/<实验名>/logs_s2_v2ProPlus` 目录要先建，否则第 5 轮存 checkpoint 时 `FileNotFoundError` 直接中断训练。
+
+命令行训练（不必开 WebUI）：
+
+```powershell
+# SoVITS：改 GPT_SoVITS/configs/s2v2ProPlus.json，写 TEMP\tmp_s2.json
+.\runtime\python.exe -s GPT_SoVITS\s2_train.py --config TEMP\tmp_s2.json
+# GPT：改 GPT_SoVITS/configs/s1longer-v2.yaml，写 TEMP\tmp_s1.yaml
+$env:hz="25hz"; .\runtime\python.exe -s GPT_SoVITS\s1_train.py --config_file TEMP\tmp_s1.yaml
+```
+
+s2 约 15 分钟、s1 约 20 分钟。`s1_train` 收尾时会在 rich 打印阶段抛 `UnicodeEncodeError`（控制台 GBK 装不下 `•`），此时 ckpt 已经写完，可以忽略。
 
 ## GPT-SoVITS 本机模型与按会话绑定
 
