@@ -16,6 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { toSpeech } from "./polish.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SPEAK_PS1 = path.join(here, "speak.ps1");
@@ -71,6 +72,7 @@ const DEFAULTS = {
   maxChars: 1200,
   minChars: 2,
   skipCodeBlocks: true,
+  polish: "rules",
   dedupeSeconds: 120,
 };
 
@@ -104,36 +106,7 @@ function log(message) {
   } catch {}
 }
 
-// 去掉 Markdown 标记，避免朗读出星号、反引号、链接地址之类的噪声。
-function toSpeech(markdown, cfg) {
-  let text = String(markdown || "");
-  if (cfg.skipCodeBlocks) text = text.replace(/```[\s\S]*?```/g, " ");
-  text = text.replace(/`([^`]*)`/g, "$1");
-  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1");
-  text = text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
-  text = text.replace(/^\s{0,3}#{1,6}\s+/gm, "");
-  text = text.replace(/^\s{0,3}[-*+]\s+/gm, "");
-  text = text.replace(/^\s{0,3}\d+\.\s+/gm, "");
-  text = text.replace(/^\s{0,3}>\s?/gm, "");
-  text = text.replace(/\*\*([^*]+)\*\*/g, "$1");
-  text = text.replace(/__([^_]+)__/g, "$1");
-  text = text.replace(/~~([^~]+)~~/g, "$1");
-  text = text.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2");
-  text = text.replace(/<[^>]+>/g, "");
-  text = text.replace(/\p{Extended_Pictographic}/gu, " "); // emoji 会让上游服务编码崩溃
-  text = text.replace(/[\uFE0F\u200D\u20E3]/g, "");
-  text = text.replace(/^\s*\|.*\|\s*$/gm, " "); // 表格行不读
-  text = text.replace(/^\s*[-*_]{3,}\s*$/gm, " ");
-  text = text.replace(/https?:\/\/\S+/g, " ");
-  text = text.replace(/\s+/g, " ").trim();
-
-  if (text.length > cfg.maxChars) {
-    const clipped = text.slice(0, cfg.maxChars);
-    const cut = Math.max(clipped.lastIndexOf("。"), clipped.lastIndexOf("！"), clipped.lastIndexOf("？"), clipped.lastIndexOf("."), clipped.lastIndexOf("\n"));
-    text = cut > cfg.maxChars * 0.5 ? clipped.slice(0, cut + 1) : clipped;
-  }
-  return text.trim();
-}
+// 朗读稿净化（去 Markdown、路径只留文件名、数字读法、长句停顿）在 polish.js。
 
 function extractText(content) {
   if (!Array.isArray(content)) return "";

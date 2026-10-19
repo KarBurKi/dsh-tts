@@ -59,9 +59,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 | `maxChars` | `1200` | 单条最多读多少字，超出按句号截断 |
 | `minChars` | `2` | 短于这个长度不读 |
 | `skipCodeBlocks` | `true` | 跳过 ``` 代码块 |
+| `polish` | `"rules"` | 朗读稿净化：`rules` = 开，`off` = 只做原来的去标记 |
 | `dedupeSeconds` | `120` | 同一段文字在这段时间内不重复读 |
 
 > 提示：`engine` 可以是 `edge`（在线）、`sapi`（离线）、`gpt_sovits`（本机模型）或 `cosyvoice`（本机零样本克隆）；本机当前用 `gpt_sovits`。
+
+## 朗读稿净化（`polish`）
+
+朗读前把「写给人看」的 Markdown 改成「念出来不别扭」的口语稿，规则在 `polish.js`：零依赖、毫秒级、确定性。
+
+- 代码块、表格、URL 不念
+- 路径只念文件名：`C:\...\config.json` → `config.json`
+- 年份逐位念（`2026 年` → `二零二六年`），百分比加「百分之」，千分位逗号去掉
+- 列表项自动补句号，制造停顿
+- 超过 42 字的句子，在「因为 / 但是 / 所以 / 然后」前插逗号
+- 抹掉引号和落单星号，括号统一成全角，`--` → `——`
+
+实测对比：`tts-ab/compare.mp3`（同一音色，前半是净化前、后半是净化后），生成于 2026-10-20。
 
 ## GPT-SoVITS 本机模型与按会话绑定
 
