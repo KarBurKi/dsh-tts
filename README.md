@@ -79,11 +79,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 
 ## 中途停止朗读
 
-三个入口，随便挑一个顺手的：
+四个入口，随便挑一个顺手的：
 
 | 方式 | 操作 | 效果 |
 | --- | --- | --- |
-| 发消息 | 在对话框发任意一条（哪怕一个标点） | 清空待读队列 + 立刻 kill 当前 ffplay |
+| 按钮 | 输入框左下按钮排最右端那个「喇叭打叉」 | 清空待读队列 + 立刻 kill 当前 ffplay |
+| 发消息 | 在对话框发任意一条（哪怕一个标点） | 同上 |
 | 双击 | `stop.bat` | 同上，不需要打字，也不用切回 DSH |
 | 浏览器 | 收藏 `http://127.0.0.1:9889/stop`，点一下 | 同上 |
 
@@ -91,6 +92,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 - 服务随 DSH 启动；`enabled: false` 时不启动。
 - 想确认当前在不在读：`http://127.0.0.1:9889/status` 返回 `{"ok":true,"speaking":true,"queued":0}`。
 - 嫌长是另一个问题：`maxChars` 调小（默认 1200）比中途掐更省事。
+
+### 按钮是怎么塞进去的（`client.js`）
+
+按钮不在 host 侧，在浏览器侧——GUI 的那排按钮归 Web 前端管，Node 插件碰不到 DOM。
+
+| 环节 | 做法 |
+| --- | --- |
+| 声明 | `package.json` 里 `dsh.client.platform = "web"`，`exports["./client"] = "./client.js"` |
+| 入口形态 | `window.__ModuleLoader__.load({ id, factory })`，导出 `apply` / `inject`（DSH 客户端插件强制要求，原生 ESM 会被拒） |
+| 挂载点 | `[data-composer-seat]`，再取里面最左边的 `button` 当锚点 |
+| 样式 | `cloneNode(true)` 复制 `+` 按钮，白拿尺寸、圆角、边框、hover、主题色，只换里面图标 |
+| 活着 | `MutationObserver` 盯 body，React 重渲染把按钮冲掉后 120ms 内补回 |
+| 点击 | `fetch("http://127.0.0.1:9889/stop")`，host 侧回了 `access-control-allow-origin`，跨端口才通 |
+
+**已知脆点**：这套定位靠 DOM 结构，GUI 改版把 `[data-composer-seat]` 或左侧按钮组换掉就会失效；届时按钮消失，`stop.bat` 和发消息两个老入口仍然可用。
 
 ## GPT-SoVITS 本机模型与按会话绑定
 

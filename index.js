@@ -215,6 +215,9 @@ export function apply(ctx) {
           res.writeHead(code, {
             "content-type": "application/json; charset=utf-8",
             "content-length": body.length,
+            // GUI 在 3501，掐音在 9889，跨端口要放行（只放本机来源，反正服务也只绑 127.0.0.1）
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
           });
           res.end(body);
         };
