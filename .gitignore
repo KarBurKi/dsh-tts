@@ -1,0 +1,7 @@
+config.json
+config.json.bak*
+current-session.json
+*.log
+gsv-infer.yaml
+node_modules/
+__pycache__/

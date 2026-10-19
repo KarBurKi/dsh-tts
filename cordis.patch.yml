@@ -1,0 +1,4 @@
+# dsh-tts bundle：挂载 Node 半侧（assistant 文字回答 → Windows 本地 TTS）
+- insert:
+    - id: dsh-tts
+      name: '@dsh-tts/speech'
