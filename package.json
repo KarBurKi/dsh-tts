@@ -1,6 +1,6 @@
 {
   "name": "@dsh-tts/speech",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "main": "index.js",
@@ -17,6 +17,7 @@
     "polish.js",
     "speak.ps1",
     "stop.bat",
+    "release.bat",
     "config.json",
     "gsv-infer.template.yaml",
     "cosyvoice_server.py",

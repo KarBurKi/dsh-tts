@@ -45,6 +45,19 @@ const DEFAULTS = {
   gsvJa: null,
   sessionVoices: {},
   gsvMaxChunk: 110,
+  // 换气时间：句子之间很短（原来的自然间隙就够了），段落之间拉开一点。
+  chunkGapMs: 120,
+  paraGapMs: 520,
+  // 预热哪一路（zh / en / ja / all / off）；空的显存留给别的模型
+  gsvPrewarm: "zh",
+  // 超过这么多分钟没合成，就把 GSV 进程收掉（0 = 不收）
+  gsvIdleExitMinutes: 20,
+  // ---- 口播改写（rewrite === "ollama" 时生效）----
+  rewrite: "off",
+  rewriteApi: "http://127.0.0.1:11434",
+  rewriteModel: "qwen3:4b",
+  rewritePrompt: "",
+  rewriteTimeoutMs: 20000,
   gsvStartTimeoutMs: 120000,
   gsvTimeoutMs: 180000,
   // ---- CosyVoice（engine === "cosyvoice" 时生效）----
@@ -225,8 +238,30 @@ export function apply(ctx) {
           queue.length = 0;
           stopCurrent();
           reply(200, { ok: true, stopped: true });
+        } else if (pathName === "/release") {
+          // 要玩大型游戏了：掐音 + 把 GSV 进程全收掉，显存立刻还回去
+          queue.length = 0;
+          stopCurrent();
+          let killed = 0;
+          for (const [api, st] of gsvStates) {
+            if (!st.child) continue;
+            try {
+              st.child.kill();
+              killed++;
+              log(`[release] kill ${api}`);
+            } catch (err) {
+              log(`[release] kill ${api} 失败: ${err && err.message}`);
+            }
+            st.child = null;
+            st.ready = false;
+            st.starting = null;
+            loadedWeights.delete(api);
+          }
+          reply(200, { ok: true, killed });
         } else if (pathName === "/status") {
-          reply(200, { ok: true, speaking, queued: queue.length });
+          const models = {};
+          for (const [api, st] of gsvStates) models[api] = { ready: !!st.ready, pid: st.child ? st.child.pid : null };
+          reply(200, { ok: true, speaking, queued: queue.length, models });
         } else {
           reply(404, { ok: false, error: "not found" });
         }
@@ -243,7 +278,6 @@ export function apply(ctx) {
   function pump() {
     if (speaking || queue.length === 0) return;
     const item = queue.shift();
-    const text = item.text;
     const sid = item.sid || "";
     speaking = true;
     interrupted = false;
@@ -253,21 +287,33 @@ export function apply(ctx) {
       setImmediate(pump);
     });
 
-    if (process.env.DSH_TTS_DRY === "1") {
-      log(`[dry] ${text}`);
-      done();
-      return;
-    }
-    if (cfg.engine === "sapi") {
-      speakSapi(text, done);
-    } else if (cfg.engine === "cosyvoice") {
-      speakCosy(text, done, sid);
-    } else if (cfg.langRouting) {
-      speakRouted(text, done, sid);
-    } else if (cfg.engine === "gpt_sovits") {
-      speakGsv(text, done, sid);
+    const run = (text) => {
+      if (process.env.DSH_TTS_DRY === "1") {
+        log(`[dry] ${text}`);
+        done();
+        return;
+      }
+      if (cfg.engine === "sapi") {
+        speakSapi(text, done);
+      } else if (cfg.engine === "cosyvoice") {
+        speakCosy(text, done, sid);
+      } else if (cfg.langRouting) {
+        speakRouted(text, done, sid);
+      } else if (cfg.engine === "gpt_sovits") {
+        speakGsv(text, done, sid);
+      } else {
+        speakEdge(text, done);
+      }
+    };
+
+    if (cfg.rewrite === "ollama") {
+      // 改写失败就退回原文，朗读不该因为一个可选步骤挂掉
+      colloquialRewrite(item.text).then(
+        (out) => { if (interrupted) done(); else run(out || item.text); },
+        (err) => { log(`改写跳过：${err && err.message}`); run(item.text); },
+      );
     } else {
-      speakEdge(text, done);
+      run(item.text);
     }
   }
 
@@ -445,17 +491,46 @@ export function apply(ctx) {
   }
 
   // 按句切块：逐块合成，播放上一块时预取下一块，减少停顿。
+  // 每块带 paraEnd：块间停短一点、段落之间停长一点，听感才像在讲话而不是蹦字。
   function splitSpeech(text) {
-    const parts = String(text).split(/(?<=[。！？!?；;\n])/).map((s) => s.trim()).filter(Boolean);
+    const max = Math.max(40, Number(cfg.gsvMaxChunk) || 110);
     const chunks = [];
     let cur = "";
-    const max = Math.max(40, Number(cfg.gsvMaxChunk) || 110);
-    for (const p of parts) {
-      if (cur && (cur + p).length > max) { chunks.push(cur); cur = p; }
-      else cur += p;
+    const paras = String(text)
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const para of paras) {
+      const units = para
+        .split(/(?<=[。！？!?；;])/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!units.length) continue;
+      for (let i = 0; i < units.length; i++) {
+        const u = units[i];
+        const isLast = i === units.length - 1;
+        if (cur && (cur + u).length > max) {
+          chunks.push({ text: cur, paraEnd: false });
+          cur = "";
+        }
+        cur += u;
+        if (isLast) {
+          chunks.push({ text: cur, paraEnd: true });
+          cur = "";
+        }
+      }
     }
-    if (cur) chunks.push(cur);
-    return chunks.length ? chunks : [String(text)];
+    if (cur) chunks.push({ text: cur, paraEnd: true });
+    return chunks.length ? chunks : [{ text: String(text), paraEnd: true }];
+  }
+
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, Math.max(0, Number(ms) || 0)));
+
+  // 播完一块之后的换气时间：段落结尾长，句间短。
+  async function breathAfter(chunk) {
+    if (interrupted) return;
+    const gap = chunk && chunk.paraEnd ? cfg.paraGapMs : cfg.chunkGapMs;
+    if (gap > 0) await sleepMs(gap);
   }
 
   async function pingGsv(api, timeout = 1500) {
@@ -547,8 +622,36 @@ export function apply(ctx) {
     return st.starting;
   }
 
+  // ---- 空闲收摊：没人听就把 GSV 进程掐掉，把显存让给别的模型 ----
+  // 代价是下次要读时冷启动（几十秒），所以留的窗口不能太短。
+  const gsvLastUsed = new Map(); // api -> 时间戳
+  function touchGsv(api) { gsvLastUsed.set(api, Date.now()); }
+
+  function gsvIdleTick() {
+    const minutes = Number(cfg.gsvIdleExitMinutes);
+    if (!(minutes > 0)) return;
+    const idleMs = minutes * 60 * 1000;
+    const now = Date.now();
+    for (const [api, st] of gsvStates) {
+      if (!st.child || !st.ready) continue;
+      if (now - (gsvLastUsed.get(api) || 0) < idleMs) continue;
+      if (speaking) return; // 正在读，先不动
+      try {
+        log(`[idle] ${api} 空闲 ${minutes} 分钟以上，收掉进程`);
+        st.child.kill();
+      } catch (err) {
+        log(`[idle] kill 失败: ${err && err.message}`);
+      }
+      st.child = null;
+      st.ready = false;
+      st.starting = null;
+      loadedWeights.delete(api); // 进程没了，权重状态也失效，下次要重设
+    }
+  }
+
   async function gsvSynth(text, profile, textLang) {
     await ensureGsv(profile);
+    touchGsv(gsvBaseOf(profile.api));
     await applyWeights(profile);
     const url = new URL(gsvBaseOf(profile.api) + "/tts");
     const q = url.searchParams;
@@ -598,7 +701,7 @@ export function apply(ctx) {
     }
     try {
       const chunks = splitSpeech(text);
-      let next = chunks.length ? gsvSynth(chunks[0], profile).catch((err) => { log(`gsv synth: ${err && err.message}`); return null; }) : null;
+      let next = chunks.length ? gsvSynth(chunks[0].text, profile).catch((err) => { log(`gsv synth: ${err && err.message}`); return null; }) : null;
       for (let i = 0; i < chunks.length; i++) {
         if (interrupted) {
           if (next) next.then((f) => { if (f) rm(f); }).catch(() => {});
@@ -606,11 +709,12 @@ export function apply(ctx) {
         }
         const file = await next;
         next = i + 1 < chunks.length
-          ? gsvSynth(chunks[i + 1], profile).catch((err) => { log(`gsv synth: ${err && err.message}`); return null; })
+          ? gsvSynth(chunks[i + 1].text, profile).catch((err) => { log(`gsv synth: ${err && err.message}`); return null; })
           : null;
         if (interrupted) { if (file) rm(file); continue; }
         if (!file) { log("gsv chunk 失败，跳过该块"); continue; }
         await playFileAsync(file);
+        await breathAfter(chunks[i]);
       }
     } catch (err) {
       log(`gsv speak: ${err && err.message}`);
@@ -713,7 +817,7 @@ export function apply(ctx) {
     try {
       const chunks = splitSpeech(text);
       let next = chunks.length
-        ? cosySynth(chunks[0]).catch((err) => { log(`cosy synth: ${err && err.message}`); return null; })
+        ? cosySynth(chunks[0].text).catch((err) => { log(`cosy synth: ${err && err.message}`); return null; })
         : null;
       for (let i = 0; i < chunks.length; i++) {
         if (interrupted) {
@@ -722,11 +826,12 @@ export function apply(ctx) {
         }
         const file = await next;
         next = i + 1 < chunks.length
-          ? cosySynth(chunks[i + 1]).catch((err) => { log(`cosy synth: ${err && err.message}`); return null; })
+          ? cosySynth(chunks[i + 1].text).catch((err) => { log(`cosy synth: ${err && err.message}`); return null; })
           : null;
         if (interrupted) { if (file) rm(file); continue; }
         if (!file) { log("cosy chunk 失败，跳过该块"); continue; }
         await playFileAsync(file);
+        await breathAfter(chunks[i]);
       }
     } catch (err) {
       log(`cosy speak: ${err && err.message}`);
@@ -750,27 +855,37 @@ export function apply(ctx) {
   // 语种路由要按「句」判断，不能先按长度拼块，否则会把中文和日文并在一起。
   function splitSentences(text) {
     const max = Math.max(40, Number(cfg.gsvMaxChunk) || 110);
-    const parts = String(text)
-      .split(/(?<=[。．.！？!?；;…\n])/)
+    const out = [];
+    const paras = String(text)
+      .split(/\n+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    const out = [];
-    for (const p of parts) {
-      if (p.length <= max) out.push(p);
-      else for (let i = 0; i < p.length; i += max) out.push(p.slice(i, i + max));
+    for (const para of paras) {
+      const units = [];
+      const parts = para
+        .split(/(?<=[。．.！？!?；;…])/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      for (const p of parts) {
+        if (p.length <= max) units.push(p);
+        else for (let i = 0; i < p.length; i += max) units.push(p.slice(i, i + max));
+      }
+      units.forEach((u, i) => out.push({ text: u, paraEnd: i === units.length - 1 }));
     }
     return out;
   }
 
   function buildSegments(text) {
     const out = [];
-    for (const chunk of splitSentences(text)) {
+    for (const unit of splitSentences(text)) {
+      const chunk = unit.text;
       if (!/[\u4e00-\u9fff\u3040-\u30ffA-Za-z0-9]/.test(chunk)) continue; // 纯标点不送合成
       const lang = detectLang(chunk);
       const last = out[out.length - 1];
       if (last && last.lang === lang && last.text.length + chunk.length <= 160) {
         last.text += (lang === "en" ? " " : "") + chunk;
-      } else out.push({ lang, text: chunk });
+        last.paraEnd = unit.paraEnd;
+      } else out.push({ lang, text: chunk, paraEnd: unit.paraEnd });
     }
     return out;
   }
@@ -833,12 +948,65 @@ export function apply(ctx) {
         if (interrupted) { if (file) rm(file); continue; }
         if (!file) { await new Promise((r) => speakSapi(segs[i].text, r)); continue; }
         await playFileAsync(file);
+        await breathAfter(segs[i]);
       }
     } catch (err) {
       log(`routed speak: ${err && err.message}`);
     } finally {
       done();
     }
+  }
+
+  // ---- 口播改写：把书面稿先喂给本地小模型，改成人话再合成 ----
+  // 规则层拧不动句式（长定语、从句套从句），只有模型能拆。代价是一次本地推理。
+  const DEFAULT_REWRITE_PROMPT = [
+    "你是给语音合成准备稿子的编辑。把下面这段中文改成适合念出来的口播稿。",
+    "硬性要求：",
+    "1. 事实、数字、路径、命令、代码标识符一个都不能改，也不能删。",
+    "2. 一句话超过二十五个字的，拆成两三句。",
+    "3. 去掉书面腔：因此→所以、然而→但是、进行→做、该X→这个X、其→它的、综上所述→总之。",
+    "4. 可以加口语连接词，但每段最多一个，别用「嗯」「那个」这类填充词撑字数。",
+    "5. 列表改成一句一句说，不要编号，不要 Markdown。",
+    "6. 只输出改好的正文，不要开场白、不要解释、不要代码块。",
+  ].join("\n");
+
+  const rewriteCache = new Map();
+
+  async function colloquialRewrite(text) {
+    if (cfg.rewrite !== "ollama" || !text) return text;
+    const cached = rewriteCache.get(text);
+    if (cached) return cached;
+    const api = String(cfg.rewriteApi || "http://127.0.0.1:11434").replace(/\/+$/, "");
+    const timeout = Number(cfg.rewriteTimeoutMs) || 20000;
+    const started = Date.now();
+    const r = await fetch(api + "/api/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: cfg.rewriteModel || "qwen3:4b",
+        prompt: `${cfg.rewritePrompt || DEFAULT_REWRITE_PROMPT}\n\n---\n${text}`,
+        stream: false,
+        options: {
+          temperature: 0.25,
+          num_predict: Math.min(2048, Math.max(256, text.length * 2)),
+          num_ctx: 4096,
+        },
+      }),
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (!r.ok) throw new Error(`rewrite http ${r.status}`);
+    const j = await r.json();
+    let out = String(j.response || "")
+      .replace(/^```[a-z]*\s*/i, "")
+      .replace(/```\s*$/, "")
+      .trim();
+    // 模型偶尔爱垫一句「以下是改好的稿子」
+    out = out.replace(/^(好[的了]?[，,]?|以下是[^。\n]*[。：:])\s*/g, "").trim();
+    if (out.length < text.length * 0.35) throw new Error(`rewrite 输出过短(${out.length}/${text.length})`);
+    rewriteCache.set(text, out);
+    while (rewriteCache.size > 40) rewriteCache.delete(rewriteCache.keys().next().value);
+    log(`[rewrite] ${text.length} -> ${out.length} 字，${Date.now() - started}ms`);
+    return out;
   }
 
   function speak(text, force = false, sid = "") {
@@ -893,16 +1061,23 @@ export function apply(ctx) {
   if (cfg.enabled) startStopServer();
 
   // 启动时按引擎预热，避免第一条回答干等模型加载。
+  // gsvPrewarm：zh / en / ja 只热哪一个，all 全热（旧行为），off 一个都不热。
   if (cfg.enabled && process.env.DSH_TTS_DRY !== "1") {
     if (cfg.engine === "cosyvoice") {
       ensureCosy().catch((err) => log(`[cosy] prewarm: ${err && err.message}`));
     } else {
-      const profiles = gsvProfiles();
+      const mode = String(cfg.gsvPrewarm || "zh").toLowerCase();
+      const profiles = mode === "off" ? [] : mode === "all" ? gsvProfiles() : gsvProfiles().filter((p) => p.name === mode);
+      log(`[prewarm] ${mode} -> ${profiles.map((p) => p.name).join(",") || "(none)"}`);
       (async () => {
         for (const p of profiles) {
           try { await ensureGsv(p); } catch (err) { log(`[${p.name}] gsv prewarm: ${err && err.message}`); }
         }
       })();
+    }
+    // 空闲收摊：每 60 秒看一眼，超过 gsvIdleExitMinutes 没合成过就掐掉
+    if (cfg.engine === "gpt_sovits" || cfg.langRouting) {
+      setInterval(gsvIdleTick, 60000).unref();
     }
   }
 }

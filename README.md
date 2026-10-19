@@ -61,8 +61,49 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 | `skipCodeBlocks` | `true` | 跳过 ``` 代码块 |
 | `polish` | `"rules"` | 朗读稿净化：`rules` = 开，`off` = 只做原来的去标记 |
 | `dedupeSeconds` | `120` | 同一段文字在这段时间内不重复读 |
+| `chunkGapMs` | `120` | 句与句之间的换气时间（毫秒） |
+| `paraGapMs` | `520` | 段落之间的停顿（毫秒），听着才像在讲话 |
+| `gsvPrewarm` | `"zh"` | 启动时预热哪一路：`zh` / `en` / `ja` / `all` / `off` |
+| `gsvIdleExitMinutes` | `20` | 这么久没合成过就掐掉 GSV 进程（`0` = 不掐） |
+| `rewrite` | `"off"` | `ollama` = 合成前先让本地小模型把稿子改口播 |
+| `rewriteApi` | `http://127.0.0.1:11434` | Ollama 地址 |
+| `rewriteModel` | `"qwen3:4b"` | 改写用哪个模型 |
+| `rewriteTimeoutMs` | `20000` | 改写超时就退回原文，不卡朗读 |
 
 > 提示：`engine` 可以是 `edge`（在线）、`sapi`（离线）、`gpt_sovits`（本机模型）或 `cosyvoice`（本机零样本克隆）；本机当前用 `gpt_sovits`。
+
+## 显存：按需开，用完就还
+
+GSV 是个吃显存的大户——中文 / 英文 / 日文三路各一个进程，全开约 **7.8 GB**。开着它打不了大型游戏，所以给了三层收放：
+
+| 什么时候 | 怎么收 |
+| --- | --- |
+| 启动 | 只预热 `gsvPrewarm` 指定的那一路（默认 `zh`，约 2.6 GB）；`off` = 一个都不开 |
+| 闲着 | 超过 `gsvIdleExitMinutes`（默认 20）没合成过，自动掐掉进程，显存归零 |
+| 立刻要玩 | 双击 **`release.bat`**：掐掉正在读的 + 把 GSV 全收掉，跑完顺手打一行 `nvidia-smi` |
+
+`release.bat` 打的是本地旁路 `http://127.0.0.1:9889/release`，返回 `{"ok":true,"killed":3}` 就是收干净了。查当前状态：
+
+```powershell
+curl http://127.0.0.1:9889/status
+# {"ok":true,"speaking":false,"queued":0,"models":{"http://127.0.0.1:9880":{"ready":true,"pid":3372}}}
+```
+
+**代价**：进程被收掉之后再要朗读，第一句要等模型冷启动（几十秒，`gsvStartTimeoutMs` 默认 120 秒上限）。所以 `gsvIdleExitMinutes` 别调太小，3 分钟以下会频繁重启。
+
+想更省事：平时 `gsvPrewarm` 设 `off`，只听声音时手动拉；或者干脆玩之前双击 `release.bat`，玩完不用管，下次朗读它会自己起来。
+
+## 让朗读别带书面腔
+
+三层，从便宜到贵：
+
+**用词**（`polish.js` 的 `COLLOQUIAL` 表，零成本）。`因此→所以`、`然而→但是`、`该方案→这个方案`、`具有→有`、`较为显著→比较明显`、`诸多→很多`、`综上所述→总的来说`……改词不改意思。`该 / 其 / 即` 这类会误伤的（应该、其中、即使）只按固定后缀换。
+
+**停顿**（`chunkGapMs` / `paraGapMs`）。原来块与块之间靠播放器收尾的自然间隙，听着像一句一句往外蹦；现在句间 120 ms、段间 520 ms。
+
+**句式**（要模型，上限也最高）。规则不敢拆长定语，一拆就把意思改歪。开了 `rewrite: "ollama"` 后，合成前先让本地小模型把稿子改一遍：拆长句、换语序、去术语。失败就用原文，不耽误读。
+
+> 参考音频的脾气也会被模型照抄——播音腔的参考录出来就是播音腔。这条本机暂时没得选：达尼亚只有一条参考音频。
 
 ## 朗读稿净化（`polish`）
 
@@ -74,6 +115,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 - 列表项自动补句号，制造停顿
 - 超过 42 字的句子，在「因为 / 但是 / 所以 / 然后」前插逗号
 - 抹掉引号和落单星号，括号统一成全角，`--` → `——`
+- 书面词换口语词（`COLLOQUIAL` 表，约 40 条，见上面「让朗读别带书面腔」）
 
 实测对比：`tts-ab/compare.mp3`（同一音色，前半是净化前、后半是净化后），生成于 2026-10-20。
 
