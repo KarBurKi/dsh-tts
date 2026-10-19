@@ -3,7 +3,9 @@
 // 引擎（config.json 的 engine）：
 //   "edge" — 微软 Edge 在线语音（默认，晓晓等自然音色，需要 python + edge-tts + ffplay）
 //   "sapi" — Windows 自带离线语音合成（System.Speech，无网络也能用）
-// edge 合成失败（断网 / 没装包）时自动回退到 sapi。
+//   "gpt_sovits" — 本机 GPT-SoVITS，按语种 / 会话路由，可热切换权重
+//   "cosyvoice" — 本机 CosyVoice2/3，参考音频零样本克隆（服务由本插件拉起）
+// edge 合成失败（断网 / 没装包）时自动回退到 sapi；cosyvoice 不可用时同样回退。
 //
 // - 默认只读「最终回答」：含 tool-call 的中间步骤消息跳过。
 // - 队列串行播放；新的用户提问会打断正在朗读的旧回答。
@@ -17,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SPEAK_PS1 = path.join(here, "speak.ps1");
+const COSY_SERVER = path.join(here, "cosyvoice_server.py");
 const LOG_FILE = path.join(here, "tts.log");
 const LOG_MAX = 512 * 1024;
 
@@ -42,6 +45,17 @@ const DEFAULTS = {
   gsvMaxChunk: 110,
   gsvStartTimeoutMs: 120000,
   gsvTimeoutMs: 180000,
+  // ---- CosyVoice（engine === "cosyvoice" 时生效）----
+  cosyApi: "http://127.0.0.1:9883",
+  cosyPython: "",
+  cosyWorkDir: "",
+  cosyModelDir: "pretrained_models/CosyVoice2-0.5B",
+  cosyRefAudio: "",
+  cosyPromptText: "",
+  cosyInstruct: "",
+  cosySpeed: 1.0,
+  cosyStartTimeoutMs: 180000,
+  cosyTimeoutMs: 180000,
   finalOnly: true,
   voice: "",
   rate: 0,
@@ -230,6 +244,8 @@ export function apply(ctx) {
     }
     if (cfg.engine === "sapi") {
       speakSapi(text, done);
+    } else if (cfg.engine === "cosyvoice") {
+      speakCosy(text, done, sid);
     } else if (cfg.langRouting) {
       speakRouted(text, done, sid);
     } else if (cfg.engine === "gpt_sovits") {
@@ -587,6 +603,122 @@ export function apply(ctx) {
     }
   }
 
+  // ---- CosyVoice：参考音频零样本克隆，服务由本插件按需拉起 ----
+  // 与 gpt_sovits 不同，CosyVoice 的「音色」就是一条参考音频：换音色 = 换 wav + 它的原文，
+  // 不需要训练，也没有权重热切换。分块、预取、打断的逻辑和 gsv 一致。
+  const cosyState = { starting: null, ready: false, child: null, logFd: null };
+
+  function cosyBase() {
+    return String(cfg.cosyApi || "").replace(/\/+$/, "");
+  }
+
+  async function pingCosy(timeout = 1500) {
+    try {
+      const r = await fetch(cosyBase() + "/health", { signal: AbortSignal.timeout(timeout) });
+      if (!r.ok) return false;
+      const j = await r.json().catch(() => ({}));
+      return !!j.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function ensureCosy() {
+    if (cosyState.starting) return cosyState.starting;
+    cosyState.starting = (async () => {
+      if (await pingCosy(1200)) { cosyState.ready = true; return; }
+      if (!cfg.cosyWorkDir) throw new Error("cosyWorkDir 未配置");
+      let u;
+      try { u = new URL(cosyBase()); } catch { throw new Error(`cosy api 非法: ${cfg.cosyApi}`); }
+      const args = [
+        COSY_SERVER,
+        "--host", u.hostname,
+        "--port", String(u.port || 9883),
+        "--model-dir", cfg.cosyModelDir || "pretrained_models/CosyVoice2-0.5B",
+      ];
+      if (cfg.cosyRefAudio) args.push("--ref-audio", cfg.cosyRefAudio);
+      log(`[cosy] starting: ${cfg.cosyPython || "python"} ${args.join(" ")}`);
+      try {
+        cosyState.logFd = fs.openSync(path.join(here, "cosy-server.log"), "a");
+        cosyState.child = spawn(cfg.cosyPython || "python", args, {
+          cwd: cfg.cosyWorkDir,
+          windowsHide: true,
+          stdio: ["ignore", cosyState.logFd, cosyState.logFd],
+          env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+        });
+      } catch (err) {
+        throw new Error(`cosy spawn 失败: ${err && err.message}`);
+      }
+      cosyState.child.on("error", (err) => log(`[cosy] spawn error: ${err && err.message}`));
+      cosyState.child.on("exit", (code) => { cosyState.ready = false; log(`[cosy] exited ${code}`); });
+      const deadline = Date.now() + (Number(cfg.cosyStartTimeoutMs) || 180000);
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 500));
+        if (interrupted) throw new Error("interrupted during cosy start");
+        if (await pingCosy(1200)) { cosyState.ready = true; log("[cosy] ready"); return; }
+      }
+      throw new Error("[cosy] 启动超时");
+    })().finally(() => { cosyState.starting = null; });
+    return cosyState.starting;
+  }
+
+  async function cosySynth(text) {
+    await ensureCosy();
+    const r = await fetch(cosyBase() + "/tts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text,
+        refAudio: cfg.cosyRefAudio || "",
+        promptText: cfg.cosyPromptText || "",
+        instruct: cfg.cosyInstruct || "",
+        speed: Number(cfg.cosySpeed) || 1.0,
+      }),
+      signal: AbortSignal.timeout(Number(cfg.cosyTimeoutMs) || 180000),
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      throw new Error(`cosy http ${r.status} ${body.slice(0, 160)}`);
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 1000) throw new Error("cosy 返回音频为空");
+    const file = tmpPath(".wav");
+    fs.writeFileSync(file, buf);
+    return file;
+  }
+
+  async function speakCosy(text, done, sid) {
+    try {
+      await ensureCosy();
+    } catch (err) {
+      log(`cosy 不可用: ${err && err.message}; 回退 edge`);
+      return speakEdge(text, done);
+    }
+    try {
+      const chunks = splitSpeech(text);
+      let next = chunks.length
+        ? cosySynth(chunks[0]).catch((err) => { log(`cosy synth: ${err && err.message}`); return null; })
+        : null;
+      for (let i = 0; i < chunks.length; i++) {
+        if (interrupted) {
+          if (next) next.then((f) => { if (f) rm(f); }).catch(() => {});
+          break;
+        }
+        const file = await next;
+        next = i + 1 < chunks.length
+          ? cosySynth(chunks[i + 1]).catch((err) => { log(`cosy synth: ${err && err.message}`); return null; })
+          : null;
+        if (interrupted) { if (file) rm(file); continue; }
+        if (!file) { log("cosy chunk 失败，跳过该块"); continue; }
+        await playFileAsync(file);
+      }
+    } catch (err) {
+      log(`cosy speak: ${err && err.message}`);
+    } finally {
+      done();
+    }
+  }
+
   // ---- 按语种路由：中文走本机模型，日文/英文走 Edge ----
   function detectLang(text) {
     const kana = (text.match(/[\u3040-\u30ff]/g) || []).length;
@@ -741,13 +873,17 @@ export function apply(ctx) {
     log(`apply error: ${err && err.message}`);
   }
 
-  // 启动时按语种预热各自的模型，避免第一条英文/日文回答干等。
+  // 启动时按引擎预热，避免第一条回答干等模型加载。
   if (cfg.enabled && process.env.DSH_TTS_DRY !== "1") {
-    const profiles = gsvProfiles();
-    (async () => {
-      for (const p of profiles) {
-        try { await ensureGsv(p); } catch (err) { log(`[${p.name}] gsv prewarm: ${err && err.message}`); }
-      }
-    })();
+    if (cfg.engine === "cosyvoice") {
+      ensureCosy().catch((err) => log(`[cosy] prewarm: ${err && err.message}`));
+    } else {
+      const profiles = gsvProfiles();
+      (async () => {
+        for (const p of profiles) {
+          try { await ensureGsv(p); } catch (err) { log(`[${p.name}] gsv prewarm: ${err && err.message}`); }
+        }
+      })();
+    }
   }
 }

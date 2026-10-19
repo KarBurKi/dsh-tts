@@ -61,7 +61,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 | `skipCodeBlocks` | `true` | 跳过 ``` 代码块 |
 | `dedupeSeconds` | `120` | 同一段文字在这段时间内不重复读 |
 
-> 提示：`engine` 可以是 `edge`（在线）、`sapi`（离线）或 `gpt_sovits`（本机模型）；本机当前用 `gpt_sovits`。
+> 提示：`engine` 可以是 `edge`（在线）、`sapi`（离线）、`gpt_sovits`（本机模型）或 `cosyvoice`（本机零样本克隆）；本机当前用 `gpt_sovits`。
 
 ## GPT-SoVITS 本机模型与按会话绑定
 
@@ -82,6 +82,34 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 - 改 `config.json` 后，dsh-tts 会在下一条消息前自动热重载（按 mtime 检测）；插件版本旧时需重启 DSH。
 
 > 提示：`gsvJa` / `gsvEn` 的权重路径要指向 `<运行时>\GPT_weights_v4\*.ckpt` 与 `SoVITS_weights_v4\*.pth`（参考音频不同名时手动配对），不要写成 `模型\<语种>\<角色>\...` —— 那里只有参考音频。
+
+## CosyVoice（零样本克隆）
+
+`engine` 改成 `"cosyvoice"` 后，朗读走本机 CosyVoice2/3：**换音色只需换一条参考音频**，不训练、不切权重。
+插件会在需要时用 `cosyWorkDir` 里的 Python 拉起 `cosyvoice_server.py`（本目录），失败则回退 Edge。
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `cosyApi` | `http://127.0.0.1:9883` | 本地服务地址（与 GSV 的 9880/9881/9882 错开） |
+| `cosyPython` | `""` | 跑 CosyVoice 的 Python（conda 环境的绝对路径），空 = `python` |
+| `cosyWorkDir` | `""` | CosyVoice 仓库根目录（`import cosyvoice` 能找到的地方） |
+| `cosyModelDir` | `pretrained_models/CosyVoice2-0.5B` | 相对 `cosyWorkDir`，或绝对路径 |
+| `cosyRefAudio` | `""` | 参考音频，**单声道、尽量干净、3–25 秒** |
+| `cosyPromptText` | `""` | 参考音频里说的那句话（逐字对照） |
+| `cosyInstruct` | `""` | 自然语言控制指令，如 `用四川话说这句话`、`用温柔的语气`；留空走零样本 |
+| `cosySpeed` | `1.0` | 语速 |
+| `cosyStartTimeoutMs` / `cosyTimeoutMs` | `180000` | 起服务 / 单块合成的超时 |
+
+服务端只有一个接口，方便手工验证：
+
+```powershell
+curl http://127.0.0.1:9883/health
+curl -X POST http://127.0.0.1:9883/tts -H "content-type: application/json" `
+  -d '{\"text\":\"测试一句\",\"refAudio\":\"D:/ref.wav\",\"promptText\":\"参考音频原文\"}' -o out.wav
+```
+
+**限制**：`sessionVoices` 目前只对 `gpt_sovits` 生效；CosyVoice 走全局单音色（`cosyRefAudio`）。
+**部署前提**：本机需要 conda + CosyVoice 环境 + 模型；Windows 上的 pynini / Matcha-TTS / spk2info 三坑见对话记录。环境没备好时，`cosyvoice` 会静默回退 Edge，不影响使用。
 
 ## 排错
 

@@ -1,19 +1,20 @@
 {
   "name": "@dsh-tts/speech",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js"
   },
-  "description": "DSH 回答朗读：GPT-SoVITS 本机模型 + Edge 在线音色 + Windows SAPI；按语种路由，并支持按 sessionId 绑定音色",
+  "description": "DSH 回答朗读：GPT-SoVITS / CosyVoice 本机模型 + Edge 在线音色 + Windows SAPI；按语种路由，并支持按 sessionId 绑定音色",
   "license": "MIT",
   "files": [
     "index.js",
     "speak.ps1",
     "config.json",
     "gsv-infer.template.yaml",
+    "cosyvoice_server.py",
     "cordis.patch.yml"
   ],
   "dsh": {
