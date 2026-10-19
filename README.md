@@ -77,6 +77,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts
 
 实测对比：`tts-ab/compare.mp3`（同一音色，前半是净化前、后半是净化后），生成于 2026-10-20。
 
+## 中途停止朗读
+
+三个入口，随便挑一个顺手的：
+
+| 方式 | 操作 | 效果 |
+| --- | --- | --- |
+| 发消息 | 在对话框发任意一条（哪怕一个标点） | 清空待读队列 + 立刻 kill 当前 ffplay |
+| 双击 | `stop.bat` | 同上，不需要打字，也不用切回 DSH |
+| 浏览器 | 收藏 `http://127.0.0.1:9889/stop`，点一下 | 同上 |
+
+- 端口在 `config.json` 的 `stopPort` 改，默认 `9889`；只绑 `127.0.0.1`，外网碰不到。
+- 服务随 DSH 启动；`enabled: false` 时不启动。
+- 想确认当前在不在读：`http://127.0.0.1:9889/status` 返回 `{"ok":true,"speaking":true,"queued":0}`。
+- 嫌长是另一个问题：`maxChars` 调小（默认 1200）比中途掐更省事。
+
 ## GPT-SoVITS 本机模型与按会话绑定
 
 | 字段 | 说明 |

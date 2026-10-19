@@ -13,6 +13,7 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,6 +75,7 @@ const DEFAULTS = {
   skipCodeBlocks: true,
   polish: "rules",
   dedupeSeconds: 120,
+  stopPort: 9889,
 };
 
 const CFG_FILE = path.join(here, "config.json");
@@ -194,6 +196,44 @@ export function apply(ctx) {
     interrupted = true;
     if (current) {
       try { current.kill(); } catch {}
+    }
+  }
+
+  // ---- 一键停止 ----
+  // 发一条新消息也能停，但听长回答听到一半再去打字很别扭。
+  // 这里开个只绑 127.0.0.1 的小旁路，浏览器收藏 / 桌面快捷方式点一下就静音。
+  let stopServer = null;
+
+  function startStopServer() {
+    if (stopServer) return;
+    const port = Number(cfg.stopPort) || 9889;
+    try {
+      stopServer = http.createServer((req, res) => {
+        const pathName = (req.url || "").split("?")[0];
+        const reply = (code, obj) => {
+          const body = Buffer.from(JSON.stringify(obj), "utf8");
+          res.writeHead(code, {
+            "content-type": "application/json; charset=utf-8",
+            "content-length": body.length,
+          });
+          res.end(body);
+        };
+        if (pathName === "/stop") {
+          queue.length = 0;
+          stopCurrent();
+          reply(200, { ok: true, stopped: true });
+        } else if (pathName === "/status") {
+          reply(200, { ok: true, speaking, queued: queue.length });
+        } else {
+          reply(404, { ok: false, error: "not found" });
+        }
+      });
+      stopServer.on("error", (err) => log(`stop server: ${err && err.message}`));
+      stopServer.listen(port, "127.0.0.1", () => {
+        log(`stop server on http://127.0.0.1:${port}/stop`);
+      });
+    } catch (err) {
+      log(`stop server 启动失败: ${err && err.message}`);
     }
   }
 
@@ -845,6 +885,9 @@ export function apply(ctx) {
   } catch (err) {
     log(`apply error: ${err && err.message}`);
   }
+
+  // 一键停止的本地旁路（只绑 127.0.0.1）。
+  if (cfg.enabled) startStopServer();
 
   // 启动时按引擎预热，避免第一条回答干等模型加载。
   if (cfg.enabled && process.env.DSH_TTS_DRY !== "1") {
