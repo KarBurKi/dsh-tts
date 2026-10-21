@@ -419,6 +419,7 @@ export function apply(ctx) {
         promptLang: cfg.gsvPromptLang,
         textLang: cfg.gsvTextLang,
         speed: cfg.gsvSpeed,
+        emotionRefs: cfg.emotionRefs,
       });
     }
     for (const [lang, prof] of [["en", cfg.gsvEn], ["ja", cfg.gsvJa]]) {
@@ -442,6 +443,23 @@ export function apply(ctx) {
 
   function gsvForLang(lang) {
     return gsvProfiles().find((p) => p.name === lang) || null;
+  }
+
+  // ---- 情绪参考：同一套权重，只换参考音频和它配套的台词 ----
+  // GSV 的 ref_audio_path / prompt_text 是每次请求的查询参数，换情绪不用重载权重，
+  // 所以逐块换声线几乎没有额外开销——最多是每块都读一次参考 wav。
+  const EMOTION_RULES = [
+    ["threat", /别怪|后果|否则|保证|后悔|小心|你敢|试试看|不客气|再说一遍|休想|轮不到|最后一次/],
+    ["playful", /哈哈|嘿嘿|嘻嘻|猜猜|惊喜|好玩|有意思|才不|呀~|哦~/],
+  ];
+
+  function pickEmotion(text, refs) {
+    if (!refs || typeof refs !== "object") return null;
+    for (const [name, re] of EMOTION_RULES) {
+      const r = refs[name];
+      if (r && r.refAudio && re.test(text)) return r;
+    }
+    return refs.soft && refs.soft.refAudio ? refs.soft : null;
   }
 
   // ---- 会话级音色：sessionVoices[sessionId] 优先于语种路由 ----
@@ -657,8 +675,9 @@ export function apply(ctx) {
     const q = url.searchParams;
     q.set("text", text);
     q.set("text_lang", textLang || profile.textLang || "zh");
-    q.set("ref_audio_path", profile.ref || "");
-    q.set("prompt_text", profile.prompt || "");
+    const emo = pickEmotion(text, profile.emotionRefs);
+    q.set("ref_audio_path", (emo && emo.refAudio) || profile.ref || "");
+    q.set("prompt_text", (emo && emo.promptText) || profile.prompt || "");
     q.set("prompt_lang", profile.promptLang || "zh");
     q.set("text_split_method", "cut5");
     q.set("batch_size", "1");

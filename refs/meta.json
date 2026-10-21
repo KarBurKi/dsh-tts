@@ -1,0 +1,32 @@
+{
+  "soft": {
+    "refAudio": "<home>\\\\.dsh\\\\plugins\\\\dsh-tts\\\\refs\\\\soft.wav",
+    "promptText": "见到我很意外吗？哈哈，别紧张嘛，我说过我们会再见面的。",
+    "dur": 8.23,
+    "num": [
+      "022"
+    ]
+  },
+  "playful": {
+    "refAudio": "<home>\\\\.dsh\\\\plugins\\\\dsh-tts\\\\refs\\\\playful.wav",
+    "promptText": "在这哦~一点惊喜！非要打架吗？差不多了吧？好累，让我歇会……",
+    "dur": 9.35,
+    "num": [
+      "108",
+      "109",
+      "112",
+      "113",
+      "114"
+    ]
+  },
+  "threat": {
+    "refAudio": "<home>\\\\.dsh\\\\plugins\\\\dsh-tts\\\\refs\\\\threat.wav",
+    "promptText": "安静！不许动！好吧，又来？",
+    "dur": 5.29,
+    "num": [
+      "118",
+      "119",
+      "150"
+    ]
+  }
+}
