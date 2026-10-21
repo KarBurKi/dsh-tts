@@ -119,6 +119,13 @@ function softenInterjections(text) {
   return text.replace(INTERJECTION_RE, "$1$2$3~");
 }
 
+// 一个汉字单独成句（「嗯。」「好。」）音素太少，模型念出来是半个字。
+// 后面还有话就并下去，让这个字有上下文可依。
+const TINY_CLAUSE_RE = /(^|[。！？；\n])\s*([\u4e00-\u9fa5])\s*[。！？；]\s*(?=[\u4e00-\u9fa5])/g;
+function mergeTinyClauses(text) {
+  return text.replace(TINY_CLAUSE_RE, "$1$2，");
+}
+
 export function toSpeech(markdown, cfg = {}) {
   const polish = cfg.polish === "off" ? "off" : "rules";
   let text = String(markdown || "");
@@ -162,6 +169,7 @@ export function toSpeech(markdown, cfg = {}) {
     text = text.replace(/[""'']/g, "");
     text = text.replace(/\(/g, "（").replace(/\)/g, "）");
     text = softenLongClauses(text);
+    text = mergeTinyClauses(text);
     text = softenInterjections(text);
   }
 
