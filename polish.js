@@ -108,6 +108,17 @@ function softenLongClauses(text, max = 42) {
   });
 }
 
+// 句首孤立的叹词后面跟逗号，会被念成一板一眼的「啊，」，听着像播音员念稿。
+// 换成波浪号，模型会把那个字拖长，才像真的叹了一声。句中「这样啊，」不是叹词，不动。
+const INTERJECTIONS = "啊哎哦呃嗯唉诶嘿哈哟呀喂唔咦";
+const INTERJECTION_RE = new RegExp(
+  `(^|[。！？；：\\n])(\\s*)([${INTERJECTIONS}])([，,])`,
+  "g",
+);
+function softenInterjections(text) {
+  return text.replace(INTERJECTION_RE, "$1$2$3~");
+}
+
 export function toSpeech(markdown, cfg = {}) {
   const polish = cfg.polish === "off" ? "off" : "rules";
   let text = String(markdown || "");
@@ -151,6 +162,7 @@ export function toSpeech(markdown, cfg = {}) {
     text = text.replace(/[""'']/g, "");
     text = text.replace(/\(/g, "（").replace(/\)/g, "）");
     text = softenLongClauses(text);
+    text = softenInterjections(text);
   }
 
   // 5. 收尾
