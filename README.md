@@ -41,7 +41,7 @@ ffplay -nodisp -autoexit -loglevel quiet "$env:TEMP\t.mp3"
 powershell -NoProfile -ExecutionPolicy Bypass -File "<home>\.dsh\plugins\dsh-tts\speak.ps1" -Text "你好，我是深海。"
 ```
 
-## 配置：`config.json`（改完重启 DSH 生效）
+## 配置：`config.json`（改完自动生效）
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
@@ -152,7 +152,7 @@ curl http://127.0.0.1:9889/status
 | 浏览器 | 收藏 `http://127.0.0.1:9889/stop`，点一下 | 同上 |
 
 - 端口在 `config.json` 的 `stopPort` 改，默认 `9889`；只绑 `127.0.0.1`，外网碰不到。
-- 服务随 DSH 启动；`enabled: false` 时不启动。
+- 服务随 DSH 启动；`enabled: false` 时不启动。0.8.2 起开关**热改也跟着起停**：切到 `false` 会关掉 9889 并释放端口，切回 `true` 会重新拉起（0.8.1 及以前热改只更新内存配置、9889 一直是哑的，得重启宿主）。
 - 想确认当前在不在读：`http://127.0.0.1:9889/status` 返回 `{"ok":true,"speaking":true,"queued":0}`。
 - 嫌长是另一个问题：`maxChars` 调小（默认 1200）比中途掐更省事。
 

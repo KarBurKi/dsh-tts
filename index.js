@@ -195,6 +195,7 @@ export function apply(ctx) {
       catch { return; } // 可能写到一半，等下一次事件再试
       cfgMtime = st.mtimeMs;
       Object.assign(cfg, loadConfig());
+      syncStopServer();
       log("config.json 已重新加载");
     } catch {}
   }
@@ -273,6 +274,19 @@ export function apply(ctx) {
     } catch (err) {
       log(`stop server 启动失败: ${err && err.message}`);
     }
+  }
+
+  function stopStopServer() {
+    if (!stopServer) return;
+    try { stopServer.close(); } catch {}
+    stopServer = null;
+  }
+
+  // 开关热改时同步 9889：只起不停会让按钮变哑（关掉时端口还占着），
+  // 只停不起则反之——所以两头都管。
+  function syncStopServer() {
+    if (cfg.enabled && !stopServer) startStopServer();
+    else if (!cfg.enabled && stopServer) stopStopServer();
   }
 
   function pump() {
@@ -1077,7 +1091,7 @@ export function apply(ctx) {
   }
 
   // 一键停止的本地旁路（只绑 127.0.0.1）。
-  if (cfg.enabled) startStopServer();
+  syncStopServer();
 
   // 启动时按引擎预热，避免第一条回答干等模型加载。
   // gsvPrewarm：zh / en / ja 只热哪一个，all 全热（旧行为），off 一个都不热。
